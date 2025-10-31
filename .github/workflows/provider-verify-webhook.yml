@@ -1,0 +1,107 @@
+name: Provider - Webhook Triggered Verification
+
+on:
+  repository_dispatch:
+    types: 
+      - contract_requiring_verification_published
+      - contract_content_changed
+
+env:
+  PACT_BROKER_BASE_URL: ${{ secrets.PACT_BROKER_BASE_URL }}
+  PACT_BROKER_TOKEN: ${{ secrets.PACT_BROKER_TOKEN }}
+
+jobs:
+  verify-changed-contract:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:14
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: testdb
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.client_payload.branch || 'main' }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Log webhook payload
+        run: |
+          echo "🔔 Webhook received from Pact Broker"
+          echo "Consumer: ${{ github.event.client_payload.pact_url }}"
+          echo "Consumer version: ${{ github.event.client_payload.consumer_version_number }}"
+          echo "Consumer branch: ${{ github.event.client_payload.consumer_version_branch }}"
+
+      - name: Run Pact verification
+        id: verify
+        continue-on-error: true
+        run: npm run test:pact:verify
+        env:
+          CI: true
+          GIT_COMMIT: ${{ github.sha }}
+          GIT_BRANCH: ${{ github.ref_name }}
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/testdb
+          PACT_URL: ${{ github.event.client_payload.pact_url }}
+
+      - name: Notify consumer on success
+        if: steps.verify.outcome == 'success' && github.event.client_payload.consumer_pr_number
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GH_CROSS_REPO_TOKEN }}
+          script: |
+            const consumerRepo = '${{ github.event.client_payload.consumer_repo }}' || 'your-org/consumer-app';
+            const [owner, repo] = consumerRepo.split('/');
+            
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: ${{ github.event.client_payload.consumer_pr_number }},
+              body: '✅ **Provider Verification Passed**\n\n' +
+                    'Your contract changes are compatible with UserService!\n\n' +
+                    `**Provider Version:** \`${{ github.sha }}\`\n` +
+                    `**Verification Time:** ${new Date().toISOString()}\n\n` +
+                    `[View Details](${process.env.PACT_BROKER_BASE_URL})`
+            });
+
+      - name: Notify consumer on failure
+        if: steps.verify.outcome == 'failure' && github.event.client_payload.consumer_pr_number
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GH_CROSS_REPO_TOKEN }}
+          script: |
+            const consumerRepo = '${{ github.event.client_payload.consumer_repo }}' || 'your-org/consumer-app';
+            const [owner, repo] = consumerRepo.split('/');
+            
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: ${{ github.event.client_payload.consumer_pr_number }},
+              body: '❌ **Provider Verification Failed**\n\n' +
+                    '⚠️ Your contract changes break compatibility with UserService!\n\n' +
+                    `**Provider Version:** \`${{ github.sha }}\`\n` +
+                    '**Action Required:** Please review the changes or coordinate with the provider team.\n\n' +
+                    `[View Failure Details](${process.env.PACT_BROKER_BASE_URL})`
+            });
+
+      - name: Fail workflow if verification failed
+        if: steps.verify.outcome == 'failure'
+        run: exit 1

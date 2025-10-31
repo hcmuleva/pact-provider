@@ -4,15 +4,22 @@
   "main": "src/app.js",
   "scripts": {
     "start": "node src/app.js",
-    "test:pact": "jest tests/pact --runInBand"
+    "test:pact": "jest tests/pact --runInBand",
+    "test:provider": "jest tests/pact/userService.pact.verifier.test.js --runInBand --verbose",
+    "pact:verify:broker": "PACT_BROKER_URL=http://localhost:9292 PACT_BROKER_USERNAME=admin PACT_BROKER_PASSWORD=password jest tests/pact/userService.pact.verifier.test.js --runInBand --verbose",
+    "test:pact:verify": "jest --testMatch='**/*.pact.verifier.test.js' --runInBand"
+
   },
   "dependencies": {
     "@pact-foundation/pact": "^15.0.1",
     "body-parser": "^1.20.2",
-    "express": "^4.19.0"
+    "express": "^4.21.2"
   },
   "devDependencies": {
+    "@semantic-release/changelog": "^6.0.3",
+    "@semantic-release/git": "^10.0.1",
     "cross-env": "^7.0.3",
-    "jest": "^29.7.0"
+    "jest": "^29.7.0",
+    "semantic-release": "^22.0.12"
   }
 }

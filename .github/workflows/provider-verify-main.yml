@@ -1,0 +1,79 @@
+name: Provider - Verify & Publish (Main)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'package.json'
+
+env:
+  PACT_BROKER_BASE_URL: ${{ secrets.PACT_BROKER_BASE_URL }}
+  PACT_BROKER_TOKEN: ${{ secrets.PACT_BROKER_TOKEN }}
+
+jobs:
+  verify-and-publish:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:14
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: testdb
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Get package version
+        id: package-version
+        run: echo "version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
+
+      - name: Run Pact verification and publish
+        run: npm run test:pact:verify
+        env:
+          CI: true
+          GIT_COMMIT: ${{ github.sha }}
+          GIT_BRANCH: main
+          PROVIDER_VERSION: ${{ steps.package-version.outputs.version }}
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/testdb
+          PACT_BROKER_BASE_URL: ${{ secrets.PACT_BROKER_BASE_URL }}
+          PACT_BROKER_TOKEN: ${{ secrets.PACT_BROKER_TOKEN }}
+
+      - name: Can I deploy to production?
+        run: |
+          npx pact-broker can-i-deploy \
+            --pacticipant=UserService \
+            --version=${{ steps.package-version.outputs.version }} \
+            --to-environment=production \
+            --broker-base-url=$PACT_BROKER_BASE_URL \
+            --broker-token=$PACT_BROKER_TOKEN
+
+      - name: Record deployment
+        if: success()
+        run: |
+          npx pact-broker record-deployment \
+            --pacticipant=UserService \
+            --version=${{ steps.package-version.outputs.version }} \
+            --environment=production \
+            --broker-base-url=$PACT_BROKER_BASE_URL \
+            --broker-token=$PACT_BROKER_TOKEN

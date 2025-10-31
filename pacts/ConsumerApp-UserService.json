@@ -1,0 +1,71 @@
+{
+    "consumer": {
+      "name": "ConsumerApp"
+    },
+    "provider": {
+      "name": "UserService"
+    },
+    "interactions": [
+      {
+        "description": "a request for user with id 1",
+        "providerState": "user with id 1 exists",
+        "request": {
+          "method": "GET",
+          "path": "/users/1"
+        },
+        "response": {
+          "status": 200,
+          "headers": {
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "id": 1,
+            "name": "John Doe"
+          }
+        }
+      },
+      {
+        "description": "a request for user with id 2",
+        "providerState": "user with id 2 exists",
+        "request": {
+          "method": "GET",
+          "path": "/users/2"
+        },
+        "response": {
+          "status": 200,
+          "headers": {
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "id": 2,
+            "name": "Jane Smith"
+          }
+        }
+      },
+      {
+        "description": "a request for user with id 999",
+        "providerState": "user with id 999 does not exist",
+        "request": {
+          "method": "GET",
+          "path": "/users/999"
+        },
+        "response": {
+          "status": 404,
+          "headers": {
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "message": "User not found"
+          }
+        }
+      }
+    ],
+    "metadata": {
+      "pactSpecification": {
+        "version": "2.0.0"
+      },
+      "pact-node": {
+        "version": "10.0.0"
+      }
+    }
+  }
