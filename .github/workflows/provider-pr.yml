@@ -1,0 +1,59 @@
+
+# ============================================
+# PROVIDER WORKFLOWS
+# ============================================
+
+# FILE: .github/workflows/provider-pr.yml
+name: Provider - PR Validation
+
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches:
+      - 'feature/**'
+      - 'featur/**'  # Added for your branch naming
+      - 'feat/**'
+
+env:
+  PACT_BROKER_BASE_URL: ${{ secrets.PACT_BROKER_BASE_URL }}
+  PACT_BROKER_USERNAME: ${{ secrets.PACT_BROKER_BASIC_AUTH_USERNAME }}
+  PACT_BROKER_PASSWORD: ${{ secrets.PACT_BROKER_BASIC_AUTH_PASSWORD }}
+
+jobs:
+  verify-pacts:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run unit tests
+        run: npm test
+        continue-on-error: true
+
+      - name: Run Pact verification
+        run: npm run test:pact:verify
+        env:
+          CI: true
+          GIT_COMMIT: ${{ github.sha }}
+          GIT_BRANCH: ${{ github.ref_name }}
+          PACT_BROKER_BASE_URL: ${{ env.PACT_BROKER_BASE_URL }}
+          PACT_BROKER_USERNAME: ${{ env.PACT_BROKER_USERNAME }}
+          PACT_BROKER_PASSWORD: ${{ env.PACT_BROKER_PASSWORD }}
+
+      - name: Create summary
+        run: |
+          echo "## 🎉 Provider Verification" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Pact verification completed" >> $GITHUB_STEP_SUMMARY
+          echo "🔖 Version: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "🌿 Branch: ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY

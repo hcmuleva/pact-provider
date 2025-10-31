@@ -1,0 +1,388 @@
+--- FILE: ./workflows/provider-verification-triggered.yml ---
+name: Triggered Provider Verification
+
+on:
+  repository_dispatch:
+    types: [pact-verification-trigger]
+
+jobs:
+  verify-provider:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run Pact Verification
+        env:
+          PACT_BROKER_URL: ${{ secrets.PACT_BROKER_URL }}
+          PACT_BROKER_TOKEN: ${{ secrets.PACT_BROKER_TOKEN }}
+        run: npm run test:pact
+
+--- FILE: ./workflows/provider-verify-webhook.yml ---
+name: Provider - Webhook Triggered Verification
+
+on:
+  repository_dispatch:
+    types: 
+      - contract_requiring_verification_published
+      - contract_content_changed
+
+env:
+  PACT_BROKER_BASE_URL: ${{ secrets.PACT_BROKER_BASE_URL }}
+  PACT_BROKER_TOKEN: ${{ secrets.PACT_BROKER_TOKEN }}
+
+jobs:
+  verify-changed-contract:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:14
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: testdb
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.client_payload.branch || 'main' }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Log webhook payload
+        run: |
+          echo "🔔 Webhook received from Pact Broker"
+          echo "Consumer: ${{ github.event.client_payload.pact_url }}"
+          echo "Consumer version: ${{ github.event.client_payload.consumer_version_number }}"
+          echo "Consumer branch: ${{ github.event.client_payload.consumer_version_branch }}"
+
+      - name: Run Pact verification
+        id: verify
+        continue-on-error: true
+        run: npm run test:pact:verify
+        env:
+          CI: true
+          GIT_COMMIT: ${{ github.sha }}
+          GIT_BRANCH: ${{ github.ref_name }}
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/testdb
+          PACT_URL: ${{ github.event.client_payload.pact_url }}
+
+      - name: Notify consumer on success
+        if: steps.verify.outcome == 'success' && github.event.client_payload.consumer_pr_number
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GH_CROSS_REPO_TOKEN }}
+          script: |
+            const consumerRepo = '${{ github.event.client_payload.consumer_repo }}' || 'your-org/consumer-app';
+            const [owner, repo] = consumerRepo.split('/');
+            
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: ${{ github.event.client_payload.consumer_pr_number }},
+              body: '✅ **Provider Verification Passed**\n\n' +
+                    'Your contract changes are compatible with UserService!\n\n' +
+                    `**Provider Version:** \`${{ github.sha }}\`\n` +
+                    `**Verification Time:** ${new Date().toISOString()}\n\n` +
+                    `[View Details](${process.env.PACT_BROKER_BASE_URL})`
+            });
+
+      - name: Notify consumer on failure
+        if: steps.verify.outcome == 'failure' && github.event.client_payload.consumer_pr_number
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GH_CROSS_REPO_TOKEN }}
+          script: |
+            const consumerRepo = '${{ github.event.client_payload.consumer_repo }}' || 'your-org/consumer-app';
+            const [owner, repo] = consumerRepo.split('/');
+            
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: ${{ github.event.client_payload.consumer_pr_number }},
+              body: '❌ **Provider Verification Failed**\n\n' +
+                    '⚠️ Your contract changes break compatibility with UserService!\n\n' +
+                    `**Provider Version:** \`${{ github.sha }}\`\n` +
+                    '**Action Required:** Please review the changes or coordinate with the provider team.\n\n' +
+                    `[View Failure Details](${process.env.PACT_BROKER_BASE_URL})`
+            });
+
+      - name: Fail workflow if verification failed
+        if: steps.verify.outcome == 'failure'
+        run: exit 1
+--- FILE: ./workflows/provider-release.yml ---
+name: Provider - Release
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Run Pact verification
+        run: npm run test:pact:verify
+        env:
+          CI: true
+          GIT_COMMIT: ${{ github.sha }}
+          GIT_BRANCH: main
+          PACT_BROKER_BASE_URL: ${{ secrets.PACT_BROKER_BASE_URL }}
+          PACT_BROKER_TOKEN: ${{ secrets.PACT_BROKER_TOKEN }}
+
+      - name: Semantic Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npx semantic-release
+
+      - name: Get new version
+        id: version
+        run: echo "new_version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
+
+      - name: Create Git Tag
+        if: steps.version.outputs.new_version != ''
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a v${{ steps.version.outputs.new_version }} -m "Release v${{ steps.version.outputs.new_version }}"
+          git push origin v${{ steps.version.outputs.new_version }}
+
+      - name: Create GitHub Release
+        if: steps.version.outputs.new_version != ''
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: v${{ steps.version.outputs.new_version }}
+          release_name: Release v${{ steps.version.outputs.new_version }}
+          draft: false
+          prerelease: false
+--- FILE: ./workflows/provider-ci.yml ---
+name: Pact Provider CI
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  pact-provider:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run Provider Verification
+        env:
+          PACT_BROKER_URL: ${{ secrets.PACT_BROKER_URL }}
+          PACT_BROKER_TOKEN: ${{ secrets.PACT_BROKER_TOKEN }}
+        run: npm run test:pact
+
+--- FILE: ./workflows/provider-verify-main.yml ---
+name: Provider - Verify & Publish (Main)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'package.json'
+
+env:
+  PACT_BROKER_BASE_URL: ${{ secrets.PACT_BROKER_BASE_URL }}
+  PACT_BROKER_TOKEN: ${{ secrets.PACT_BROKER_TOKEN }}
+
+jobs:
+  verify-and-publish:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:14
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: testdb
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Get package version
+        id: package-version
+        run: echo "version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
+
+      - name: Run Pact verification and publish
+        run: npm run test:pact:verify
+        env:
+          CI: true
+          GIT_COMMIT: ${{ github.sha }}
+          GIT_BRANCH: main
+          PROVIDER_VERSION: ${{ steps.package-version.outputs.version }}
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/testdb
+          PACT_BROKER_BASE_URL: ${{ secrets.PACT_BROKER_BASE_URL }}
+          PACT_BROKER_TOKEN: ${{ secrets.PACT_BROKER_TOKEN }}
+
+      - name: Can I deploy to production?
+        run: |
+          npx pact-broker can-i-deploy \
+            --pacticipant=UserService \
+            --version=${{ steps.package-version.outputs.version }} \
+            --to-environment=production \
+            --broker-base-url=$PACT_BROKER_BASE_URL \
+            --broker-token=$PACT_BROKER_TOKEN
+
+      - name: Record deployment
+        if: success()
+        run: |
+          npx pact-broker record-deployment \
+            --pacticipant=UserService \
+            --version=${{ steps.package-version.outputs.version }} \
+            --environment=production \
+            --broker-base-url=$PACT_BROKER_BASE_URL \
+            --broker-token=$PACT_BROKER_TOKEN
+--- FILE: ./workflows/provider-verify-pr.yml ---
+name: Provider - Verify Pacts (PR)
+
+on:
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'package.json'
+
+env:
+  PACT_BROKER_BASE_URL: ${{ secrets.PACT_BROKER_BASE_URL }}
+  PACT_BROKER_TOKEN: ${{ secrets.PACT_BROKER_TOKEN }}
+
+jobs:
+  verify-pacts:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:14
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: testdb
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run unit tests
+        run: npm test
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/testdb
+
+      - name: Run Pact verification
+        run: npm run test:pact:verify
+        env:
+          CI: true
+          GIT_COMMIT: ${{ github.sha }}
+          GIT_BRANCH: ${{ github.head_ref }}
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/testdb
+          PACT_BROKER_BASE_URL: ${{ secrets.PACT_BROKER_BASE_URL }}
+          PACT_BROKER_TOKEN: ${{ secrets.PACT_BROKER_TOKEN }}
+
+      - name: Comment on consumer PRs
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GH_CROSS_REPO_TOKEN }}
+          script: |
+            // This would notify consumer repos that verification failed
+            console.log('Provider verification failed - consumer teams notified');
+--- FILE: ./workflows/provider-can-i-deploy.yml ---
+

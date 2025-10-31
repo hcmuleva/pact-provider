@@ -5,9 +5,9 @@
   "scripts": {
     "start": "node src/app.js",
     "test:pact": "jest tests/pact --runInBand",
-    "test:provider": "jest tests/pact/userService.pact.verifier.test.js --runInBand --verbose",
-    "pact:verify:broker": "PACT_BROKER_URL=http://localhost:9292 PACT_BROKER_USERNAME=admin PACT_BROKER_PASSWORD=password jest tests/pact/userService.pact.verifier.test.js --runInBand --verbose",
+    "test": "jest --testPathIgnorePatterns=pact",
     "test:pact:verify": "jest --testMatch='**/*.pact.verifier.test.js' --runInBand"
+
 
   },
   "dependencies": {

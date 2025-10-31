@@ -1,33 +1,22 @@
-name: Provider - Webhook Triggered Verification
+
+# FILE: .github/workflows/provider-webhook.yml
+name: Provider - Webhook Verification
 
 on:
   repository_dispatch:
-    types: 
+    types:
       - contract_requiring_verification_published
       - contract_content_changed
+      - pact-verification-trigger
 
 env:
   PACT_BROKER_BASE_URL: ${{ secrets.PACT_BROKER_BASE_URL }}
-  PACT_BROKER_TOKEN: ${{ secrets.PACT_BROKER_TOKEN }}
+  PACT_BROKER_USERNAME: ${{ secrets.PACT_BROKER_BASIC_AUTH_USERNAME }}
+  PACT_BROKER_PASSWORD: ${{ secrets.PACT_BROKER_BASIC_AUTH_PASSWORD }}
 
 jobs:
   verify-changed-contract:
     runs-on: ubuntu-latest
-
-    services:
-      postgres:
-        image: postgres:14
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: testdb
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
 
     steps:
       - name: Checkout code
@@ -47,6 +36,7 @@ jobs:
       - name: Log webhook payload
         run: |
           echo "🔔 Webhook received from Pact Broker"
+          echo "Event type: ${{ github.event.action }}"
           echo "Consumer: ${{ github.event.client_payload.pact_url }}"
           echo "Consumer version: ${{ github.event.client_payload.consumer_version_number }}"
           echo "Consumer branch: ${{ github.event.client_payload.consumer_version_branch }}"
@@ -59,8 +49,16 @@ jobs:
           CI: true
           GIT_COMMIT: ${{ github.sha }}
           GIT_BRANCH: ${{ github.ref_name }}
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/testdb
+          PACT_BROKER_BASE_URL: ${{ env.PACT_BROKER_BASE_URL }}
+          PACT_BROKER_USERNAME: ${{ env.PACT_BROKER_USERNAME }}
+          PACT_BROKER_PASSWORD: ${{ env.PACT_BROKER_PASSWORD }}
           PACT_URL: ${{ github.event.client_payload.pact_url }}
+
+      - name: Create summary
+        run: |
+          echo "## 🔔 Webhook Triggered Verification" >> $GITHUB_STEP_SUMMARY
+          echo "Status: ${{ steps.verify.outcome }}" >> $GITHUB_STEP_SUMMARY
+          echo "Consumer: ${{ github.event.client_payload.consumer_version_number }}" >> $GITHUB_STEP_SUMMARY
 
       - name: Notify consumer on success
         if: steps.verify.outcome == 'success' && github.event.client_payload.consumer_pr_number
@@ -68,7 +66,11 @@ jobs:
         with:
           github-token: ${{ secrets.GH_CROSS_REPO_TOKEN }}
           script: |
-            const consumerRepo = '${{ github.event.client_payload.consumer_repo }}' || 'your-org/consumer-app';
+            const consumerRepo = '${{ github.event.client_payload.consumer_repo }}';
+            if (!consumerRepo) {
+              console.log('No consumer repo specified in webhook payload');
+              return;
+            }
             const [owner, repo] = consumerRepo.split('/');
             
             await github.rest.issues.createComment({
@@ -88,7 +90,11 @@ jobs:
         with:
           github-token: ${{ secrets.GH_CROSS_REPO_TOKEN }}
           script: |
-            const consumerRepo = '${{ github.event.client_payload.consumer_repo }}' || 'your-org/consumer-app';
+            const consumerRepo = '${{ github.event.client_payload.consumer_repo }}';
+            if (!consumerRepo) {
+              console.log('No consumer repo specified in webhook payload');
+              return;
+            }
             const [owner, repo] = consumerRepo.split('/');
             
             await github.rest.issues.createComment({
