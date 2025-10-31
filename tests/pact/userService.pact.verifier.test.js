@@ -1,6 +1,6 @@
 const { Verifier } = require("@pact-foundation/pact");
 const path = require("path");
-const app = require("../../src/app"); 
+const app = require("../../src/app");
 
 const PORT = 8080;
 let server;
@@ -21,38 +21,49 @@ afterAll((done) => {
 
 describe("Pact Verification", () => {
   test("validates the expectations of ConsumerApp", async () => {
+    // Get broker config from environment variables
+    const brokerUrl = process.env.PACT_BROKER_BASE_URL;
+    const brokerUsername = process.env.PACT_BROKER_USERNAME;
+    const brokerPassword = process.env.PACT_BROKER_PASSWORD;
+
+    // Log the configuration (without password)
+    console.log("🔧 Broker Configuration:");
+    console.log(`  URL: ${brokerUrl || 'NOT SET'}`);
+    console.log(`  Username: ${brokerUsername || 'NOT SET'}`);
+    console.log(`  Password: ${brokerPassword ? '****' : 'NOT SET'}`);
+    console.log(`  CI: ${process.env.CI}`);
+    console.log(`  Git Commit: ${process.env.GIT_COMMIT}`);
+    console.log(`  Git Branch: ${process.env.GIT_BRANCH}`);
+
+    if (!brokerUrl) {
+      throw new Error('PACT_BROKER_BASE_URL environment variable is not set');
+    }
+
     const opts = {
       provider: "UserService",
       providerBaseUrl: `http://localhost:${PORT}`,
       
-      // Broker configuration
-      pactBrokerUrl: "http://localhost:9292",
-      pactBrokerUsername: "admin",
-      pactBrokerPassword: "password",
+      // Broker configuration from environment variables
+      pactBrokerUrl: brokerUrl,
+      pactBrokerUsername: brokerUsername,
+      pactBrokerPassword: brokerPassword,
       
-      // ⭐ THIS IS THE KEY FIX - Add consumer version selectors
+      // Consumer version selectors
       consumerVersionSelectors: [
-        {
-          latest: true  // Get the latest version of all consumer pacts
-        },
-        // Or more specific selectors:
-        // { mainBranch: true },           // Latest from main branch
-        // { deployed: true },              // Currently deployed versions
-        // { matchingBranch: true },        // Matching branch names
-        // { branch: "main" },              // Specific branch
-        // { tag: "prod" },                 // Specific tag
+        { latest: true },           // Latest from any branch
+        { mainBranch: true },       // Latest from main
+        { deployedOrReleased: true }, // Currently deployed
+        { branch: "feature/test-pact-flow" } // Specific branch for testing
       ],
       
-      // Enable pending pacts (won't fail on new, unverified contracts)
+      // Enable pending pacts (won't fail on first verification)
       enablePending: true,
-      
-      // Include work-in-progress pacts since this date
       includeWipPactsSince: "2024-01-01",
       
       // Publishing results
-      publishVerificationResult: process.env.CI === "true", // Only publish in CI
-      providerVersion: process.env.GIT_COMMIT || "1.0.0-local",
-      providerVersionBranch: process.env.GIT_BRANCH || "local",
+      publishVerificationResult: process.env.CI === "true",
+      providerVersion: process.env.PROVIDER_VERSION || process.env.GIT_COMMIT || "1.0.0-local",
+      providerVersionBranch: process.env.GIT_BRANCH || "main",
       
       // State handlers
       stateHandlers: {
@@ -67,20 +78,23 @@ describe("Pact Verification", () => {
         },
         "user with id 999 does not exist": () => {
           console.log("🔧 Setting up state: user with id 999 does not exist");
-          // TODO: Ensure user 999 doesn't exist in DB
           return Promise.resolve();
         }
       },
       
-      logLevel: "info"
+      logLevel: "info",
+      timeout: 30000 // 30 seconds timeout
     };
+
+    console.log("🚀 Starting Pact verification...");
 
     try {
       const verifier = new Verifier(opts);
       await verifier.verifyProvider();
       console.log("🎉 Pact Verification Complete!");
     } catch (error) {
-      console.error("❌ Pact Verification Failed:", error);
+      console.error("❌ Pact Verification Failed:");
+      console.error(error);
       throw error;
     }
   });
