@@ -1,5 +1,3 @@
-
-# FILE: .github/workflows/provider-webhook.yml
 name: Provider - Webhook Verification
 
 on:
@@ -7,7 +5,7 @@ on:
     types:
       - contract_requiring_verification_published
       - contract_content_changed
-      - pact-verification-trigger
+      - contract_published
 
 env:
   PACT_BROKER_BASE_URL: ${{ secrets.PACT_BROKER_BASE_URL }}
@@ -21,8 +19,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.client_payload.branch || 'main' }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -35,79 +31,52 @@ jobs:
 
       - name: Log webhook payload
         run: |
-          echo "🔔 Webhook received from Pact Broker"
-          echo "Event type: ${{ github.event.action }}"
-          echo "Consumer: ${{ github.event.client_payload.pact_url }}"
-          echo "Consumer version: ${{ github.event.client_payload.consumer_version_number }}"
-          echo "Consumer branch: ${{ github.event.client_payload.consumer_version_branch }}"
+          echo "🔔 Webhook Triggered!"
+          echo "Event: ${{ github.event.action }}"
+          echo "Consumer: ${{ github.event.client_payload.consumer_name }}"
+          echo "Provider: UserService"
+          echo "Pact URL: ${{ github.event.client_payload.pact_url }}"
+          echo "Consumer Version: ${{ github.event.client_payload.consumer_version_number }}"
+          echo "Consumer Branch: ${{ github.event.client_payload.consumer_version_branch }}"
 
       - name: Run Pact verification
         id: verify
-        continue-on-error: true
         run: npm run test:pact:verify
         env:
-          CI: true
+          CI: "true"
           GIT_COMMIT: ${{ github.sha }}
           GIT_BRANCH: ${{ github.ref_name }}
-          PACT_BROKER_BASE_URL: ${{ env.PACT_BROKER_BASE_URL }}
-          PACT_BROKER_USERNAME: ${{ env.PACT_BROKER_USERNAME }}
-          PACT_BROKER_PASSWORD: ${{ env.PACT_BROKER_PASSWORD }}
-          PACT_URL: ${{ github.event.client_payload.pact_url }}
+          PACT_BROKER_BASE_URL: ${{ secrets.PACT_BROKER_BASE_URL }}
+          PACT_BROKER_USERNAME: ${{ secrets.PACT_BROKER_BASIC_AUTH_USERNAME }}
+          PACT_BROKER_PASSWORD: ${{ secrets.PACT_BROKER_BASIC_AUTH_PASSWORD }}
+          PROVIDER_VERSION: ${{ github.sha }}
 
-      - name: Create summary
+      - name: Record deployment to test environment
+        if: success()
         run: |
-          echo "## 🔔 Webhook Triggered Verification" >> $GITHUB_STEP_SUMMARY
-          echo "Status: ${{ steps.verify.outcome }}" >> $GITHUB_STEP_SUMMARY
-          echo "Consumer: ${{ github.event.client_payload.consumer_version_number }}" >> $GITHUB_STEP_SUMMARY
+          echo "📝 Recording deployment to test environment..."
+          npx pact-broker record-deployment \
+            --pacticipant=UserService \
+            --version=${{ github.sha }} \
+            --environment=test \
+            --broker-base-url=${{ env.PACT_BROKER_BASE_URL }} \
+            --broker-username=${{ env.PACT_BROKER_USERNAME }} \
+            --broker-password=${{ env.PACT_BROKER_PASSWORD }}
 
-      - name: Notify consumer on success
-        if: steps.verify.outcome == 'success' && github.event.client_payload.consumer_pr_number
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GH_CROSS_REPO_TOKEN }}
-          script: |
-            const consumerRepo = '${{ github.event.client_payload.consumer_repo }}';
-            if (!consumerRepo) {
-              console.log('No consumer repo specified in webhook payload');
-              return;
-            }
-            const [owner, repo] = consumerRepo.split('/');
-            
-            await github.rest.issues.createComment({
-              owner,
-              repo,
-              issue_number: ${{ github.event.client_payload.consumer_pr_number }},
-              body: '✅ **Provider Verification Passed**\n\n' +
-                    'Your contract changes are compatible with UserService!\n\n' +
-                    `**Provider Version:** \`${{ github.sha }}\`\n` +
-                    `**Verification Time:** ${new Date().toISOString()}\n\n` +
-                    `[View Details](${process.env.PACT_BROKER_BASE_URL})`
-            });
+      - name: Verification successful
+        if: success()
+        run: |
+          echo "✅ Provider verification passed!" >> $GITHUB_STEP_SUMMARY
+          echo "Consumer: ${{ github.event.client_payload.consumer_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "Version: ${{ github.event.client_payload.consumer_version_number }}" >> $GITHUB_STEP_SUMMARY
+          echo "Branch: ${{ github.event.client_payload.consumer_version_branch }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Recorded deployment to **test** environment" >> $GITHUB_STEP_SUMMARY
 
-      - name: Notify consumer on failure
-        if: steps.verify.outcome == 'failure' && github.event.client_payload.consumer_pr_number
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GH_CROSS_REPO_TOKEN }}
-          script: |
-            const consumerRepo = '${{ github.event.client_payload.consumer_repo }}';
-            if (!consumerRepo) {
-              console.log('No consumer repo specified in webhook payload');
-              return;
-            }
-            const [owner, repo] = consumerRepo.split('/');
-            
-            await github.rest.issues.createComment({
-              owner,
-              repo,
-              issue_number: ${{ github.event.client_payload.consumer_pr_number }},
-              body: '❌ **Provider Verification Failed**\n\n' +
-                    '⚠️ Your contract changes break compatibility with UserService!\n\n' +
-                    `**Provider Version:** \`${{ github.sha }}\`\n` +
-                    '**Action Required:** Please review the changes or coordinate with the provider team.\n\n' +
-                    `[View Failure Details](${process.env.PACT_BROKER_BASE_URL})`
-            });
-
-      - name: Fail workflow if verification failed
-        if: steps.verify.outcome == 'failure'
-        run: exit 1
+      - name: Verification failed
+        if: failure()
+        run: |
+          echo "❌ Provider verification failed!" >> $GITHUB_STEP_SUMMARY
+          echo "Consumer: ${{ github.event.client_payload.consumer_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "This may break the consumer application!" >> $GITHUB_STEP_SUMMARY
+          exit 1
